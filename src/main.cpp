@@ -17,7 +17,64 @@ const int8_t i2c_addr = 0x69;
 #define Offset_motor_right 0
 
 // If your sensors are digital (on/off) set to 1, otherwise 0 for analog reads
-#define IR_SENSORS_ARE_DIGITAL 1
+#define IR_SENSORS_ARE_DIGITAL 0
+
+//.......................................................
+float yawDeg = 0.0f;            // current yaw angle in degrees
+float gyroZOffset = 0.0f;       // gyro Z bias (°/s)
+unsigned long lastYawTime = 0;  // for dt calculation
+
+// change this if your gyro range is different
+// For BMI160 at ±2000 °/s -> 16.4 LSB per °/s
+const float GYRO_SENSITIVITY = 16.4f; 
+
+/////////////////////////////////////////////////
+void calibrateGyroZ(int samples = 500) {
+  long sum = 0;
+  int16_t accelGyro[6];
+
+  for (int i = 0; i < samples; i++) {
+    if (bmi160.getAccelGyroData(accelGyro) == 0) {
+      // Z gyro is accelGyro[2] (first 3 are gyro, as in your code)
+      sum += accelGyro[2];
+    }
+    delay(2); // small delay between samples
+  }
+
+  float avgRaw = (float)sum / samples;
+  gyroZOffset = avgRaw / GYRO_SENSITIVITY;  // convert to °/s
+}
+
+float updateYawDeg() {
+  int16_t accelGyro[6] = {0};
+  int rslt = bmi160.getAccelGyroData(accelGyro);
+  if (rslt != 0) {
+    // on error, just return last yaw
+    return yawDeg;
+  }
+
+  unsigned long now = millis();
+  float dt = (now - lastYawTime) / 1000.0f; // seconds
+  lastYawTime = now;
+
+  // raw Z gyro -> °/s
+  float gz_dps = (float)accelGyro[2] / GYRO_SENSITIVITY;
+
+  // remove bias from calibration
+  gz_dps -= gyroZOffset;
+
+  // integrate to get angle
+  yawDeg += gz_dps * dt;
+
+  // wrap to -180 .. 180
+  if (yawDeg > 180.0f)      yawDeg -= 360.0f;
+  else if (yawDeg < -180.0f) yawDeg += 360.0f;
+
+  return yawDeg;
+}
+
+
+//.......................................................
 
 uint16_t irReadings[8];
 int arr_rows = 8;
@@ -67,16 +124,14 @@ void readIRArray(){
   for(uint8_t ch=0; ch<8; ++ch){
     muxSelect(ch);
     // digital IR sensors only
-    irReadings[ch] = digitalRead(MUX_SIG_PIN);
+    irReadings[ch] = analogRead(MUX_SIG_PIN);
   }
   muxEnable(false);
 
 }
 
 // Compute signed normalized error [-1 .. 1] using sensors 0..7 with center between 3 and 4
-float computeLineError(){
 
-}
 
 // ----- Motor Driver Pins -----
 const int AIN1 = 3, AIN2 = 2, PWMA = 1;
@@ -121,7 +176,7 @@ void moveBackward(uint8_t speed){
   digitalWrite(STBY, HIGH);
 }
 
-void turnLeft(uint8_t speed){
+void turnRight(uint8_t speed){
   speed = constrain(speed, 0, 255);
   // left wheel backward (reversed), right wheel forward
   digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left motor reversed
@@ -129,9 +184,14 @@ void turnLeft(uint8_t speed){
   digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
   analogWrite(PWMB, speed - delta);
   digitalWrite(STBY, HIGH);
+  yawDeg=0;
+  while (yawDeg>-90){
+    updateYawDeg();
+  }
+  stopMotors();
 }
 
-void turnRight(uint8_t speed){
+void turnLeft(uint8_t speed){
   speed = constrain(speed, 0, 255);
   // left wheel forward (reversed), right wheel backward
   digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left motor reversed
@@ -139,6 +199,11 @@ void turnRight(uint8_t speed){
   digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
   analogWrite(PWMB, speed + delta);
   digitalWrite(STBY, HIGH);
+  yawDeg=0;
+  while (yawDeg<90){
+    updateYawDeg();
+  }
+  stopMotors();
 }
 
 void setMotorSpeeds(int leftSpeed, int rightSpeed) {
@@ -162,7 +227,7 @@ int detect_turn(uint16_t irReadings[8] = irReadings){
   */
   int line_on_right = 0;
   int line_on_left = 0;
-  int str_line;
+  int str_line = 0;
   if (irReadings[0] == 1 && irReadings[1] == 1 && irReadings[2] == 1) {
     line_on_left = 1; // left turn
   } 
@@ -183,7 +248,7 @@ int detect_turn(uint16_t irReadings[8] = irReadings){
   }
 }
 
-float calaculate_error(){
+float calculate_error(){
   float err;
   for (int i = 0; i < 8; i++) {
     if (i < 3){
@@ -203,7 +268,7 @@ float calaculate_error(){
 
 void followLine() {
   static float lastError = 0.0f;
-  float error = computeLineError();
+  float error = calculate_error();
   float derivative = error - lastError;
   lastError = error;
 
@@ -284,20 +349,35 @@ void setup() {
   } else {
     Serial.println("BMI160 init OK");
   }
-
+  //.............................................
+  delay(1000);        // let sensor settle
+  calibrateGyroZ();   // calibrate while robot is still
+  lastYawTime = millis();
+  // ................................................
 }
 
 void loop() {
-  delay(500);
-  // Read IR sensor array via demux and print values
-  readIRArray();
   Serial.print("IR: ");
   for(uint8_t i=0;i<8;i++){
     Serial.print(irReadings[i]);
     if(i<7) Serial.print(",");
   }
   Serial.println();
-  float err = computeLineError();
+  //...........................................................................
+  // delay(500);
+  // turnRight(50);
+  // delay(3000);
+  // turnLeft(50);
+  // delay(3000);
+  // //...........................................................................
+
+  float yaw = updateYawDeg();
+  Serial.println(yaw);  // -180 .. 180
+
+  // your other stuff here
+  delay(10);
+  // ............................................................................
+  float err = calculate_error();
   printf("Error: %.3f\n", err);
   while (!Endpoint)
   {
@@ -312,5 +392,4 @@ void loop() {
       stopMotors();
     }
   }
-  
 }
