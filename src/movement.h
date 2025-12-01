@@ -2,16 +2,10 @@
 #define MOVEMENT_H
 
 #include <Arduino.h>
+#include "config.h"
 
-extern const int AIN1;
-extern const int AIN2;
-extern const int PWMA;
-extern const int BIN1;
-extern const int BIN2;
-extern const int PWMB;
-extern const int STBY;
-extern int Offset_motor_right;
-extern int delta;
+// Motor pin definitions are private to movement.cpp
+// All motor control goes through public functions
 
 void initMovement();
 void stopMotors();
@@ -20,6 +14,7 @@ void moveBackward(uint8_t speed);
 void turnRight(uint8_t speed);
 void turnLeft(uint8_t speed);
 void setMotorSpeeds(int leftSpeed, int rightSpeed);
+void setMotorCommand(int leftSpeed, int rightSpeed, bool applyOffset);
 int getLeftSpeed();
 int getRightSpeed();
 

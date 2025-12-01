@@ -1,5 +1,6 @@
 #include "movement.h"
 #include "imu.h"
+#include "config.h"
 
 const int AIN1 = 3;
 const int AIN2 = 2;
@@ -8,8 +9,7 @@ const int BIN1 = 5;
 const int BIN2 = 6;
 const int PWMB = 7;
 const int STBY = 4;
-int Offset_motor_right = 0;
-int delta = 30;
+
 // track last commanded speeds (0-255)
 static int lastLeftSpeed = 0;
 static int lastRightSpeed = 0;
@@ -23,9 +23,37 @@ void initMovement() {
   pinMode(PWMB, OUTPUT);
   pinMode(STBY, OUTPUT);
   digitalWrite(STBY, HIGH);
+  Serial.println("Movement system initialized");
 }
 
-void stopMotors(){
+// ============================================================================
+// Core Motor Command - Centralized Control
+// ============================================================================
+void setMotorCommand(int leftSpeed, int rightSpeed, bool applyOffset = true) {
+  leftSpeed = constrain(leftSpeed, 0, 255);
+  rightSpeed = constrain(rightSpeed, 0, 255);
+
+  // Apply motor balance offset consistently
+  if (applyOffset) {
+    leftSpeed = constrain(leftSpeed - motorConfig.offsetMotorRight, 0, 255);
+    rightSpeed = constrain(rightSpeed + motorConfig.offsetMotorRight, 0, 255);
+  }
+
+  // Forward direction for both motors
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);  // Left motor forward
+  analogWrite(PWMA, leftSpeed);
+
+  digitalWrite(BIN1, HIGH);
+  digitalWrite(BIN2, LOW);   // Right motor forward
+  analogWrite(PWMB, rightSpeed);
+  digitalWrite(STBY, HIGH);
+
+  lastLeftSpeed = leftSpeed;
+  lastRightSpeed = rightSpeed;
+}
+
+void stopMotors() {
   analogWrite(PWMA, 0);
   analogWrite(PWMB, 0);
   digitalWrite(AIN1, LOW);
@@ -36,90 +64,158 @@ void stopMotors(){
   lastRightSpeed = 0;
 }
 
-void moveForward(uint8_t speed){
+// ============================================================================
+// Basic Movement Functions
+// ============================================================================
+void moveForward(uint8_t speed) {
   speed = constrain(speed, 0, 255);
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left motor reversed
+  setMotorCommand(speed, speed, true);
+}
+
+void moveBackward(uint8_t speed) {
+  speed = constrain(speed, 0, 255);
+  digitalWrite(AIN1, HIGH);
+  digitalWrite(AIN2, LOW);   // Left motor backward
   analogWrite(PWMA, speed);
-  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);  // Right motor normal
+
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);  // Right motor backward
   analogWrite(PWMB, speed);
   digitalWrite(STBY, HIGH);
+
   lastLeftSpeed = speed;
   lastRightSpeed = speed;
 }
 
-void moveBackward(uint8_t speed){
+// ============================================================================
+// Turn Functions with Improved Logic
+// ============================================================================
+void turnRight(uint8_t speed) {
   speed = constrain(speed, 0, 255);
-  digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);  // Left motor reversed
-  analogWrite(PWMA, speed);
-  digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH);  // Right motor normal
-  analogWrite(PWMB, speed);
-  digitalWrite(STBY, HIGH);
-  lastLeftSpeed = speed;
-  lastRightSpeed = speed;
-}
-
-void turnRight(uint8_t speed){
-  speed = constrain(speed, 0, 255);
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left motor reversed
-  int leftPwm = constrain(speed + delta, 0, 255);
-  int rightPwm = constrain(speed - delta, 0, 255);
-  analogWrite(PWMA, leftPwm);
-  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
-  analogWrite(PWMB, rightPwm);
-  digitalWrite(STBY, HIGH);
-  // record commanded speeds so UI can show them
-  lastLeftSpeed = leftPwm;
-  lastRightSpeed = rightPwm;
-
-  // use yaw from IMU: reset and rotate until absolute angle reaches ~90deg
-  extern float yawDeg;
-  yawDeg = 0;
-  unsigned long start = millis();
-  const unsigned long timeoutMs = 4000; // safety timeout
-  while (fabs(yawDeg) < 90.0f && (millis() - start) < timeoutMs) {
-    updateYawDeg();
-    delay(5); // give IMU/I2C some breathing room
-  }
-  stopMotors();
-}
-
-void turnLeft(uint8_t speed){
-  speed = constrain(speed, 0, 255);
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left motor reversed
-  int leftPwm = constrain(speed - delta, 0, 255);
-  int rightPwm = constrain(speed + delta, 0, 255);
-  analogWrite(PWMA, leftPwm);
-  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
-  analogWrite(PWMB, rightPwm);
-  digitalWrite(STBY, HIGH);
-  lastLeftSpeed = leftPwm;
-  lastRightSpeed = rightPwm;
+  currentState = BOT_TURNING;
 
   extern float yawDeg;
   yawDeg = 0;
+
   unsigned long start = millis();
-  const unsigned long timeoutMs = 4000;
-  while (fabs(yawDeg) < 90.0f && (millis() - start) < timeoutMs) {
+  float targetAngle = motorConfig.turnAngleDegrees;
+  bool turnComplete = false;
+  float peakYaw = 0;
+
+  Serial.print("Starting RIGHT turn, target: ");
+  Serial.print(targetAngle);
+  Serial.println("°");
+
+  while (!turnComplete && (millis() - start) < motorConfig.turnTimeoutMs) {
     updateYawDeg();
+
+    // Proportional speed reduction as approaching target (prevents overshoot)
+    float angleDiff = fabs(yawDeg) - targetAngle;
+    float speedFactor = constrain(1.0f - (angleDiff / 15.0f), 0.3f, 1.0f);
+
+    int adjustedSpeed = (int)(speed * speedFactor);
+    adjustedSpeed = constrain(adjustedSpeed, motorConfig.minPWM, speed);
+
+    int leftPwm = constrain(adjustedSpeed + motorConfig.turnDelta, 0, 255);
+    int rightPwm = constrain(adjustedSpeed - motorConfig.turnDelta, 0, 255);
+
+    setMotorCommand(leftPwm, rightPwm, false);  // Don't apply offset for turns
+
+    peakYaw = fmax(peakYaw, fabs(yawDeg));
+
+    // Exit when target reached
+    if (fabs(yawDeg) >= targetAngle) {
+      turnComplete = true;
+    }
+
     delay(5);
   }
+
   stopMotors();
+
+  if (!turnComplete) {
+    Serial.print("Turn timeout! Reached: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    diagnostics.turnsFailed++;
+    currentState = BOT_ERROR;
+  } else {
+    Serial.print("RIGHT turn complete: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    currentState = BOT_LINE_FOLLOWING;
+  }
 }
 
+void turnLeft(uint8_t speed) {
+  speed = constrain(speed, 0, 255);
+  currentState = BOT_TURNING;
+
+  extern float yawDeg;
+  yawDeg = 0;
+
+  unsigned long start = millis();
+  float targetAngle = -motorConfig.turnAngleDegrees;  // Negative for left
+  bool turnComplete = false;
+  float peakYaw = 0;
+
+  Serial.print("Starting LEFT turn, target: ");
+  Serial.print(targetAngle);
+  Serial.println("°");
+
+  while (!turnComplete && (millis() - start) < motorConfig.turnTimeoutMs) {
+    updateYawDeg();
+
+    // Proportional speed reduction
+    float angleDiff = fabs(yawDeg) - fabs(targetAngle);
+    float speedFactor = constrain(1.0f - (angleDiff / 15.0f), 0.3f, 1.0f);
+
+    int adjustedSpeed = (int)(speed * speedFactor);
+    adjustedSpeed = constrain(adjustedSpeed, motorConfig.minPWM, speed);
+
+    int leftPwm = constrain(adjustedSpeed - motorConfig.turnDelta, 0, 255);
+    int rightPwm = constrain(adjustedSpeed + motorConfig.turnDelta, 0, 255);
+
+    setMotorCommand(leftPwm, rightPwm, false);
+
+    peakYaw = fmin(peakYaw, yawDeg);
+
+    // Exit when target reached
+    if (yawDeg <= targetAngle) {
+      turnComplete = true;
+    }
+
+    delay(5);
+  }
+
+  stopMotors();
+
+  if (!turnComplete) {
+    Serial.print("Turn timeout! Reached: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    diagnostics.turnsFailed++;
+    currentState = BOT_ERROR;
+  } else {
+    Serial.print("LEFT turn complete: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    currentState = BOT_LINE_FOLLOWING;
+  }
+}
+
+// ============================================================================
+// Line Following Motor Control
+// ============================================================================
 void setMotorSpeeds(int leftSpeed, int rightSpeed) {
   leftSpeed = constrain(leftSpeed, 0, 255);
   rightSpeed = constrain(rightSpeed, 0, 255);
-
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);  // Left forward (reversed)
-  digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);  // Right forward
-  analogWrite(PWMA, leftSpeed - Offset_motor_right);
-  analogWrite(PWMB, rightSpeed + Offset_motor_right);
-  digitalWrite(STBY, HIGH);
-  lastLeftSpeed = leftSpeed;
-  lastRightSpeed = rightSpeed;
-  delay(1);
+  setMotorCommand(leftSpeed, rightSpeed, true);
 }
 
+// ============================================================================
+// Getter Functions
+// ============================================================================
 int getLeftSpeed() {
   return lastLeftSpeed;
 }

@@ -1,5 +1,6 @@
 #include "sensors.h"
 #include "movement.h"
+#include "config.h"
 #include <Arduino.h>
 
 // MUX pins and settings
@@ -17,20 +18,11 @@ uint16_t rawIrReadings[8];
 uint16_t irReadings[8];
 const bool IR_INVERTED = true; // true if raw value is LOW when on the line
 
-// threshold for converting analog->digital
-static uint16_t irThreshold[8] = {900,700,700,700,700,700,700,700};
+// Endpoint tracking
 int arr_rows = 8;
 int arr_cols = 8;
 std::vector<std::vector<int>> irValues(arr_rows, std::vector<int>(arr_cols));
 bool Endpoint = false;
-
-// Line following PD parameters
-const int BASE_SPEED = 100;
-const int MAX_SPEED = 120;
-const int MIN_SPEED = 80;
-const float KP = 10.0f;
-const float KD = 10.0f;
-const int SIDE_DETECT_CONSECUTIVE = 7;
 
 void initSensors() {
   pinMode(MUX_ADDR0, OUTPUT);
@@ -67,14 +59,14 @@ void muxEnable(bool enable){
   }
 }
 
-void readIRArray(){
-  for(uint8_t ch=0; ch<8; ch++){
+void readIRArray() {
+  for (uint8_t ch = 0; ch < 8; ch++) {
     uint16_t raw = muxSelect(ch);
     rawIrReadings[ch] = raw;
     if (IR_INVERTED) {
-      irReadings[ch] = (raw < irThreshold[ch]) ? 1 : 0;
+      irReadings[ch] = (raw < sensorConfig.irThreshold[ch]) ? 1 : 0;
     } else {
-      irReadings[ch] = (raw >= irThreshold[ch]) ? 1 : 0;
+      irReadings[ch] = (raw >= sensorConfig.irThreshold[ch]) ? 1 : 0;
     }
   }
 }
@@ -87,68 +79,129 @@ void readIRArray(){
 //   return irThreshold;
 // }
 
-int detect_turn(uint16_t irR[8]){
-  int line_on_right = 0;
-  int line_on_left = 0;
-  int str_line = 0;
-  if (irR[0] == 1 && irR[1] == 1 && irR[2] == 1) {
-    line_on_right = 1; // left turn
+// ============================================================================
+// Turn Detection with Debouncing
+// ============================================================================
+int detect_turn(uint16_t irR[8]) {
+  int leftCount = 0;
+  int rightCount = 0;
+  int centerCount = 0;
+
+  // Count active sensors by region
+  for (int i = LEFT_SENSORS_START; i <= LEFT_SENSORS_END; i++) {
+    if (irR[i] == 1) leftCount++;
   }
-  if (irR[5] == 1 && irR[6] == 1 && irR[7] == 1) {
-    line_on_left = 1; // right turn
+  for (int i = RIGHT_SENSORS_START; i <= RIGHT_SENSORS_END; i++) {
+    if (irR[i] == 1) rightCount++;
   }
-  if (irR[3] == 1 && irR[4] == 1) {
-    str_line = 1; // no turn
+
+  centerCount = irR[CENTER_LEFT_SENSOR] + irR[CENTER_RIGHT_SENSOR];
+
+  int currentDetection = 0;
+
+  // Priority: left turn > right turn > straight > ambiguous
+  if (leftCount >= LEFT_TURN_THRESHOLD && rightCount < RIGHT_TURN_THRESHOLD) {
+    currentDetection = -1;  // LEFT TURN
   }
-  if (line_on_right == 0 && line_on_left == 0 ){
-    Serial.println("No turn detected");
-    return 0;
-  } else if (line_on_right == 1 && line_on_left == 0){
-    Serial.println("Right turn detected");
-    return 1;
-  } else if (line_on_left == 1 && line_on_right == 0){
-    Serial.println("Left turn detected");
-    return -1;
+  else if (rightCount >= RIGHT_TURN_THRESHOLD && leftCount < LEFT_TURN_THRESHOLD) {
+    currentDetection = 1;   // RIGHT TURN
+  }
+  else if (centerCount >= CENTER_STRAIGHT_THRESHOLD) {
+    currentDetection = 0;   // STRAIGHT
+  }
+  else {
+    currentDetection = 2;   // AMBIGUOUS/ERROR STATE
+  }
+
+  // Debouncing: only report if same detection for N consecutive frames
+  if (currentDetection == turnState.lastTurnDetected) {
+    turnState.consecutiveFrames++;
   } else {
-    return 2;
+    turnState.consecutiveFrames = 1;
+    turnState.lastTurnDetected = currentDetection;
   }
+
+  if (turnState.consecutiveFrames < turnState.debounceThreshold) {
+    return 0;  // Unconfirmed, treat as straight
+  }
+
+  return currentDetection;
 }
 
-float calculate_error(){
+float calculate_error() {
   float err = 0.0f;
-  for (int i = 0; i < 8; i++) {
-    if (i < 3){
-      if (irReadings[i] == 1){
-        err = err - (4 - i);
-      }
-    }
-    if (i > 4){
-      if (irReadings[i] == 1){
-        err = err + (i - 3);
-      }
+  int activeCount = 0;
+
+  // Weighted error: left sensors negative, right sensors positive
+  for (int i = LEFT_SENSORS_START; i <= LEFT_SENSORS_END; i++) {
+    if (irReadings[i] == 1) {
+      err += -(4 - i);  // -3, -2, -1
+      activeCount++;
     }
   }
+  for (int i = RIGHT_SENSORS_START; i <= RIGHT_SENSORS_END; i++) {
+    if (irReadings[i] == 1) {
+      err += (i - 3);   // 2, 3, 4
+      activeCount++;
+    }
+  }
+
+  // Track diagnostics
+  if (activeCount > 0) {
+    diagnostics.maxError = max(diagnostics.maxError, fabs(err));
+    diagnostics.minError = min(diagnostics.minError, fabs(err));
+  }
+
   return err;
 }
 
+// ============================================================================
+// Improved PD Controller with Low-Pass Filtering
+// ============================================================================
+float calculatePDCorrection(float error) {
+  static float lastFilteredDerivative = 0;
+
+  // Proportional term
+  float pTerm = pdController.kp * error;
+
+  // Derivative term with low-pass filtering to reduce noise
+  float rawDerivative = error - pdController.lastError;
+
+  float filteredDerivative;
+  if (pdController.useDerivativeLowPass) {
+    filteredDerivative = 
+      pdController.lowPassAlpha * rawDerivative + 
+      (1.0f - pdController.lowPassAlpha) * lastFilteredDerivative;
+    lastFilteredDerivative = filteredDerivative;
+  } else {
+    filteredDerivative = rawDerivative;
+  }
+
+  float dTerm = pdController.kd * filteredDerivative;
+
+  pdController.lastError = error;
+
+  // Combined correction with saturation
+  float correction = pTerm + dTerm;
+  correction = constrain(correction, -pdController.maxCorrection, pdController.maxCorrection);
+
+  return correction;
+}
+
 void followLine() {
-  static float lastError = 0.0f;
   float error = calculate_error();
-  float derivative = error - lastError;
-  lastError = error;
+  float correction = calculatePDCorrection(error);
 
-  float correction = (KP * error) + (KD * derivative);
+  int leftSpeed = sensorConfig.baseSpeed - correction;
+  int rightSpeed = sensorConfig.baseSpeed + correction;
 
-  int leftSpeed = BASE_SPEED - correction;
-  int rightSpeed = BASE_SPEED + correction;
-
-  leftSpeed = constrain(leftSpeed, MIN_SPEED, MAX_SPEED);
-  rightSpeed = constrain(rightSpeed, MIN_SPEED, MAX_SPEED);
+  leftSpeed = constrain(leftSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
+  rightSpeed = constrain(rightSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
 
   setMotorSpeeds(leftSpeed, rightSpeed);
 }
 
-void keep_track_of_endpoint(std::vector<int> ir_array ){
+void keep_track_of_endpoint(std::vector<int> ir_array) {
   for (int row = 0; row < arr_rows - 1; row++) {
     for (int col = 0; col < arr_cols; col++) {
       irValues[row][col] = irValues[row + 1][col];
@@ -170,9 +223,55 @@ void keep_track_of_endpoint(std::vector<int> ir_array ){
       endpoint_count++;
     }
   }
-  if (endpoint_count >= SIDE_DETECT_CONSECUTIVE) {
+  if (endpoint_count >= sensorConfig.turnDetectConsecutive) {
     Endpoint = true;
   } else {
     Endpoint = false;
   }
+}
+
+// ============================================================================
+// Runtime Tuning Functions
+// ============================================================================
+void setIRThreshold(uint8_t channel, uint16_t threshold) {
+  if (channel < 8) {
+    sensorConfig.irThreshold[channel] = constrain(threshold, 100, 1023);
+    Serial.print("Set IR[");
+    Serial.print(channel);
+    Serial.print("] threshold to ");
+    Serial.println(sensorConfig.irThreshold[channel]);
+  }
+}
+
+void setControlGains(float kp, float kd) {
+  sensorConfig.kp = max(0.0f, kp);
+  sensorConfig.kd = max(0.0f, kd);
+  pdController.kp = sensorConfig.kp;
+  pdController.kd = sensorConfig.kd;
+  Serial.print("Control gains updated: KP=");
+  Serial.print(sensorConfig.kp);
+  Serial.print(" KD=");
+  Serial.println(sensorConfig.kd);
+}
+
+void setBaseSpeed(int speed) {
+  sensorConfig.baseSpeed = constrain(speed, 30, 200);
+  Serial.print("Base speed set to: ");
+  Serial.println(sensorConfig.baseSpeed);
+}
+
+void setTurnDelta(int delta) {
+  motorConfig.turnDelta = constrain(delta, 10, 100);
+  Serial.print("Turn delta set to: ");
+  Serial.println(motorConfig.turnDelta);
+}
+
+uint16_t getRawIRReading(uint8_t channel) {
+  if (channel < 8) return rawIrReadings[channel];
+  return 0;
+}
+
+uint8_t getDigitalIRReading(uint8_t channel) {
+  if (channel < 8) return irReadings[channel];
+  return 0;
 }
