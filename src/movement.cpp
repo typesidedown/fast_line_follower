@@ -95,10 +95,10 @@ void turnRight(uint8_t speed) {
   currentState = BOT_TURNING;
 
   extern float yawDeg;
-  yawDeg = 0;
+  yawDeg = -20;
 
   unsigned long start = millis();
-  float targetAngle = motorConfig.turnAngleDegrees;
+  float targetAngle = -motorConfig.turnAngleDegrees;
   bool turnComplete = false;
   float peakYaw = 0;
 
@@ -124,7 +124,7 @@ void turnRight(uint8_t speed) {
     peakYaw = fmax(peakYaw, fabs(yawDeg));
 
     // Exit when target reached
-    if (fabs(yawDeg) >= targetAngle) {
+    if (fabs(yawDeg) >= fabs(targetAngle)) {
       turnComplete = true;
     }
 
@@ -152,22 +152,22 @@ void turnLeft(uint8_t speed) {
   currentState = BOT_TURNING;
 
   extern float yawDeg;
-  yawDeg = 0;
+  yawDeg = 20;
 
   unsigned long start = millis();
-  float targetAngle = -motorConfig.turnAngleDegrees;  // Negative for left
+  float targetAngle = motorConfig.turnAngleDegrees;  // Negative for left
   bool turnComplete = false;
   float peakYaw = 0;
 
   Serial.print("Starting LEFT turn, target: ");
-  Serial.print(targetAngle);
+  Serial.print(targetAngle - 10);
   Serial.println("°");
 
   while (!turnComplete && (millis() - start) < motorConfig.turnTimeoutMs) {
     updateYawDeg();
 
     // Proportional speed reduction
-    float angleDiff = fabs(yawDeg) - fabs(targetAngle);
+    float angleDiff = -fabs(yawDeg) +fabs(targetAngle);
     float speedFactor = constrain(1.0f - (angleDiff / 15.0f), 0.3f, 1.0f);
 
     int adjustedSpeed = (int)(speed * speedFactor);
@@ -178,10 +178,10 @@ void turnLeft(uint8_t speed) {
 
     setMotorCommand(leftPwm, rightPwm, false);
 
-    peakYaw = fmin(peakYaw, yawDeg);
+    peakYaw = fmax(peakYaw, yawDeg);
 
     // Exit when target reached
-    if (yawDeg <= targetAngle) {
+    if (fabs(yawDeg) >= fabs(targetAngle)) {
       turnComplete = true;
     }
 
@@ -203,6 +203,64 @@ void turnLeft(uint8_t speed) {
     currentState = BOT_LINE_FOLLOWING;
   }
 }
+
+void turnAround(uint8_t speed) {
+  speed = constrain(speed, 0, 255);
+  currentState = BOT_TURNING;
+
+  extern float yawDeg;
+  yawDeg = 0;
+
+  unsigned long start = millis();
+  float targetAngle = -motorConfig.turnAngleDegrees - 90;
+  bool turnComplete = false;
+  float peakYaw = 0;
+
+  Serial.print("Starting RIGHT turn, target: ");
+  Serial.print(targetAngle);
+  Serial.println("°");
+
+  while (!turnComplete && (millis() - start) < motorConfig.turnTimeoutMs) {
+    updateYawDeg();
+
+    // Proportional speed reduction as approaching target (prevents overshoot)
+    float angleDiff = fabs(yawDeg) - targetAngle;
+    float speedFactor = constrain(1.0f - (angleDiff / 15.0f), 0.3f, 1.0f);
+
+    int adjustedSpeed = (int)(speed * speedFactor);
+    adjustedSpeed = constrain(adjustedSpeed, motorConfig.minPWM, speed);
+
+    int leftPwm = constrain(adjustedSpeed + motorConfig.turnDelta, 0, 255);
+    int rightPwm = constrain(adjustedSpeed - motorConfig.turnDelta, 0, 255);
+
+    setMotorCommand(leftPwm, rightPwm, false);  // Don't apply offset for turns
+
+    peakYaw = fmax(peakYaw, fabs(yawDeg));
+
+    // Exit when target reached
+    if (fabs(yawDeg) >= fabs(targetAngle)) {
+      turnComplete = true;
+    }
+
+    delay(5);
+  }
+
+  stopMotors();
+
+  if (!turnComplete) {
+    Serial.print("Turn timeout! Reached: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    diagnostics.turnsFailed++;
+    currentState = BOT_ERROR;
+  } else {
+    Serial.print("RIGHT turn complete: ");
+    Serial.print(peakYaw);
+    Serial.println("°");
+    currentState = BOT_LINE_FOLLOWING;
+  }
+}
+
 
 // ============================================================================
 // Line Following Motor Control

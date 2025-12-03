@@ -6,6 +6,16 @@
 #include "config.h"
 
 // ============================================================================
+// DISPLAY MODE SELECTION
+// ============================================================================
+enum DisplayMode {
+  DISPLAY_STATUS = 0,     // Yaw, Error, Motor speeds
+  DISPLAY_IR_DIGITAL = 1, // Digital IR readings
+  DISPLAY_IR_RAW = 2      // Raw ADC IR values
+};
+DisplayMode currentDisplayMode = DISPLAY_STATUS;
+
+// ============================================================================
 // SERIAL COMMAND PARSER FOR RUNTIME TUNING
 // ============================================================================
 void handleSerialCommands() {
@@ -96,6 +106,19 @@ void handleSerialCommands() {
         Serial.println(irReadings[i]);
       }
     }
+    // --- Switch Display Mode ---
+    else if (command == "display_status") {
+      currentDisplayMode = DISPLAY_STATUS;
+      Serial.println("Display mode: STATUS (Yaw, Error, Motor speeds)");
+    }
+    else if (command == "display_ir_digital") {
+      currentDisplayMode = DISPLAY_IR_DIGITAL;
+      Serial.println("Display mode: IR DIGITAL READINGS");
+    }
+    else if (command == "display_ir_raw") {
+      currentDisplayMode = DISPLAY_IR_RAW;
+      Serial.println("Display mode: IR RAW ADC VALUES");
+    }
     // --- Diagnostics ---
     else if (command == "diag") {
       Serial.println("\n===== DIAGNOSTICS =====");
@@ -131,6 +154,10 @@ void handleSerialCommands() {
       Serial.println("  motor_test_forward");
       Serial.println("  motor_test_left");
       Serial.println("  motor_test_right");
+      Serial.println("\n--- Display on OLED ---");
+      Serial.println("  display_status       - Show status (Yaw, Error, Speeds)");
+      Serial.println("  display_ir_digital   - Show digital IR readings");
+      Serial.println("  display_ir_raw       - Show raw ADC IR values");
       Serial.println("\n--- Monitoring ---");
       Serial.println("  status            - Show current configuration");
       Serial.println("  sensors           - Show IR sensor readings");
@@ -151,8 +178,8 @@ void setup() {
   Serial.begin(115200);
   delay(500);  // Give serial time to initialize
 
-  Serial.println("\n===== LINE FOLLOWER BOT STARTUP =====");
-  Serial.println("Initializing systems...");
+  // Serial.println("\n===== LINE FOLLOWER BOT STARTUP =====");
+  // Serial.println("Initializing systems...");
 
   // initialize modules
   initMovement();
@@ -161,15 +188,15 @@ void setup() {
   initOLED();
   initializeConfig();
 
-  Serial.println("All systems initialized!");
+  // Serial.println("All systems initialized!");
   printConfig();
-  Serial.println("Type 'help' for available commands");
-  Serial.println("=====================================\n");
+  // Serial.println("Type 'help' for available commands");
+  // Serial.println("=====================================\n");
 }
 
 void loop() {
   // Process serial commands for tuning
-  handleSerialCommands();
+  // handleSerialCommands();
 
   // Read sensor inputs
   readIRArray();
@@ -181,41 +208,53 @@ void loop() {
   //   Serial.print(irReadings[i]);
   //   if (i < 7) Serial.print(",");
   // }
-  Serial.println();
+  // Serial.println();
 
-  float yaw = updateYawDeg();
+  // float yaw = updateYawDeg();
   // Serial.print("Yaw: ");
   // Serial.println(yaw);
 
-  // update OLED status
-  float err = calculate_error();
-  int leftSpeed = getLeftSpeed();
-  int rightSpeed = getRightSpeed();
-  oledDisplayStatus(yaw, err, leftSpeed, rightSpeed);
+  // update OLED status based on display mode
+  // float err = calculate_error();
+  // int leftSpeed = getLeftSpeed();
+  // int rightSpeed = getRightSpeed();
+  
+  // switch (currentDisplayMode) {
+  //   case DISPLAY_STATUS:
+  //     oledDisplayStatus(yaw, err, leftSpeed, rightSpeed);
+  //     break;
+  //   case DISPLAY_IR_DIGITAL:
+  //     oledDisplayIRReadings(irReadings);
+  //     break;
+  //   case DISPLAY_IR_RAW:
+  //     oledDisplayRawIRReadings(rawIrReadings);
+  //     break;
+  // }
 
   // Detect turn (with debouncing)
   int turn = detect_turn();
 
-  // State machine for movement
+  // // State machine for movement
   if (turn == -1) {
-    Serial.println(">>> RIGHT TURN DETECTED");
+    // Serial.println(">>> RIGHT TURN DETECTED");
     turnRight(100);
   } 
   else if (turn == 1) {
-    Serial.println(">>> LEFT TURN DETECTED");
+    // Serial.println(">>> LEFT TURN DETECTED");
     turnLeft(100);
   } 
   else if (turn == 0) {
     currentState = BOT_LINE_FOLLOWING;
     followLine();
   } 
-  else if (turn == 2) {
-    // Ambiguous state
-    Serial.println("WARNING: Ambiguous sensor state");
-    currentState = BOT_ERROR;
+  else if (turn == -2) {
+    // turnRight(100);
     stopMotors();
+  }
+  else{
+    followLine();
   }
 
   // Small delay for stability
-  delay(10);
+  delay(5);
 }

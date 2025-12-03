@@ -21,14 +21,14 @@ extern SensorConfig sensorConfig;
 
 // Sensor index constants
 #define LEFT_SENSORS_START 0
-#define LEFT_SENSORS_END 2
+#define LEFT_SENSORS_END 3
 #define CENTER_LEFT_SENSOR 3
 #define CENTER_RIGHT_SENSOR 4
-#define RIGHT_SENSORS_START 5
+#define RIGHT_SENSORS_START 4
 #define RIGHT_SENSORS_END 7
 
-#define LEFT_TURN_THRESHOLD 3
-#define RIGHT_TURN_THRESHOLD 3
+#define LEFT_TURN_THRESHOLD 4
+#define RIGHT_TURN_THRESHOLD 4
 #define CENTER_STRAIGHT_THRESHOLD 2
 
 // ============================================================================

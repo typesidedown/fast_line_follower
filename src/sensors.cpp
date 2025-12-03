@@ -106,8 +106,14 @@ int detect_turn(uint16_t irR[8]) {
   else if (rightCount >= RIGHT_TURN_THRESHOLD && leftCount < LEFT_TURN_THRESHOLD) {
     currentDetection = 1;   // RIGHT TURN
   }
-  else if (centerCount >= CENTER_STRAIGHT_THRESHOLD) {
-    currentDetection = 0;   // STRAIGHT
+  else if (centerCount+leftCount+rightCount >= CENTER_STRAIGHT_THRESHOLD) {
+    currentDetection = 0;   // LINE FOLLOW
+  }
+  else if(centerCount + rightCount + leftCount == 0){
+    currentDetection = -2;
+  }
+  else if(centerCount + rightCount + leftCount == 8){
+    currentDetection = 1;
   }
   else {
     currentDetection = 2;   // AMBIGUOUS/ERROR STATE

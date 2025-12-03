@@ -3,12 +3,12 @@
 // Initialize all configuration structures with defaults
 
 SensorConfig sensorConfig = {
-  {900, 700, 700, 700, 700, 700, 700, 700},  // irThreshold - adjust for your sensors
+  {1000, 700, 700, 700, 700, 700, 700, 700},  // irThreshold - adjust for your sensors
   10.0f,      // kp - proportional gain
   10.0f,      // kd - derivative gain
-  100,        // baseSpeed
-  120,        // maxSpeed
-  80,         // minSpeed
+  50,        // baseSpeed
+  80,        // maxSpeed
+  20,         // minSpeed
   3           // turnDetectConsecutive - debounce frames
 };
 
@@ -16,9 +16,9 @@ MotorConfig motorConfig = {
   0,          // offsetMotorRight
   70,         // turnDelta
   40,         // minPWM threshold
-  255,        // maxPWM
+  200,        // maxPWM
   4000,       // turnTimeoutMs
-  90.0f       // turnAngleDegrees
+  75.0f       // turnAngleDegrees
 };
 
 PDController pdController = {
