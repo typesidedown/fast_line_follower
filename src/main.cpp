@@ -119,6 +119,33 @@ void handleSerialCommands() {
       currentDisplayMode = DISPLAY_IR_RAW;
       Serial.println("Display mode: IR RAW ADC VALUES");
     }
+    // --- Distance Tracking Commands ---
+    else if (command == "dist_start") {
+      startDistanceTracking();
+    }
+    else if (command == "dist_stop") {
+      stopDistanceTracking();
+    }
+    else if (command == "dist_reset") {
+      resetDistance();
+    }
+    else if (command == "dist_calibrate") {
+      calibrateAccelerometer(500);
+    }
+    else if (command == "dist_get") {
+      Serial.print("Distance: ");
+      Serial.print(getDistanceMM());
+      Serial.print(" mm (");
+      Serial.print(getDistanceUnits());
+      Serial.println(" units)");
+    }
+    else if (command.startsWith("dist_unit=")) {
+      int unitSize = command.substring(10).toInt();
+      distEstimator.distanceUnit = constrain(unitSize, 10, 500);
+      Serial.print("Distance unit set to: ");
+      Serial.print(distEstimator.distanceUnit);
+      Serial.println(" mm");
+    }
     // --- Diagnostics ---
     else if (command == "diag") {
       Serial.println("\n===== DIAGNOSTICS =====");
@@ -158,6 +185,13 @@ void handleSerialCommands() {
       Serial.println("  display_status       - Show status (Yaw, Error, Speeds)");
       Serial.println("  display_ir_digital   - Show digital IR readings");
       Serial.println("  display_ir_raw       - Show raw ADC IR values");
+      Serial.println("\n--- Distance Tracking ---");
+      Serial.println("  dist_calibrate       - Calibrate accelerometer");
+      Serial.println("  dist_start           - Start distance tracking");
+      Serial.println("  dist_stop            - Stop distance tracking");
+      Serial.println("  dist_reset           - Reset distance to zero");
+      Serial.println("  dist_get             - Get current distance");
+      Serial.println("  dist_unit=<int>      - Set unit size in mm (10-500)");
       Serial.println("\n--- Monitoring ---");
       Serial.println("  status            - Show current configuration");
       Serial.println("  sensors           - Show IR sensor readings");
@@ -187,6 +221,9 @@ void setup() {
   initIMU();
   initOLED();
   initializeConfig();
+  
+  // Initialize distance estimation with 50mm per unit (adjust as needed)
+  initDistanceEstimator(50);
 
   // Serial.println("All systems initialized!");
   printConfig();
@@ -196,23 +233,14 @@ void setup() {
 
 void loop() {
   // Process serial commands for tuning
-  // handleSerialCommands();
+  handleSerialCommands();
 
   // Read sensor inputs
   readIRArray();
   diagnostics.loopCount++;
 
-  // Debug output (optional - comment out for faster loop)
-  // Serial.print("IR dig: ");
-  // for (uint8_t i = 0; i < 8; i++) {
-  //   Serial.print(irReadings[i]);
-  //   if (i < 7) Serial.print(",");
-  // }
-  // Serial.println();
-
-  // float yaw = updateYawDeg();
-  // Serial.print("Yaw: ");
-  // Serial.println(yaw);
+  // Update distance estimation (must be before any turn/movement)
+  updateDistance();
 
   // update OLED status based on display mode
   // float err = calculate_error();
@@ -234,7 +262,7 @@ void loop() {
   // Detect turn (with debouncing)
   int turn = detect_turn();
 
-  // // State machine for movement
+  // State machine for movement
   if (turn == -1) {
     // Serial.println(">>> RIGHT TURN DETECTED");
     turnRight(100);

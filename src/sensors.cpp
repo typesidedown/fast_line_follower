@@ -71,13 +71,6 @@ void readIRArray() {
   }
 }
 
-// void setIRThreshold(uint16_t thresh) {
-//   irThreshold[] = thresh;
-// }
-
-// uint16_t getIRThreshold() {
-//   return irThreshold;
-// }
 
 // ============================================================================
 // Turn Detection with Debouncing
