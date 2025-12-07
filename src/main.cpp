@@ -4,6 +4,8 @@
 #include "imu.h"
 #include "oled.h"
 #include "config.h"
+#include "maze.h"
+#include "buttons.h"
 
 // ============================================================================
 // DISPLAY MODE SELECTION
@@ -221,68 +223,168 @@ void setup() {
   initIMU();
   initOLED();
   initializeConfig();
+  initButtons();
+  initMaze();
   
   // Initialize distance estimation with 50mm per unit (adjust as needed)
   initDistanceEstimator(50);
 
   // Serial.println("All systems initialized!");
   printConfig();
+  oledDisplayMazeIdle();
   // Serial.println("Type 'help' for available commands");
   // Serial.println("=====================================\n");
 }
 
 void loop() {
-  // Process serial commands for tuning
+  // ========================================================================
+  // BUTTON HANDLING - CHECK FOR MODE CHANGES
+  // ========================================================================
+  updateButtonStates();
+  
+  if (wasButton1Pressed()) {
+    // Button 1: Start DRY RUN
+    if (mazeState.currentMode != MAZE_DRY_RUN) {
+      switchMazeMode(MAZE_DRY_RUN);
+    }
+  }
+  
+  if (wasButton2Pressed()) {
+    // Button 2: Start FINAL RUN (only if dry run complete)
+    if (mazeState.endJunctionIndex >= 0 && mazeState.currentMode != MAZE_FINAL_RUN) {
+      switchMazeMode(MAZE_FINAL_RUN);
+    }
+  }
+  
+  // ========================================================================
+  // SERIAL COMMAND HANDLING (TUNING AND DEBUG)
+  // ========================================================================
   handleSerialCommands();
-
-  // Read sensor inputs
+  
+  // ========================================================================
+  // SENSOR READING
+  // ========================================================================
   readIRArray();
   diagnostics.loopCount++;
-
+  
   // Update distance estimation (must be before any turn/movement)
   updateDistance();
-
-  // update OLED status based on display mode
-  // float err = calculate_error();
-  // int leftSpeed = getLeftSpeed();
-  // int rightSpeed = getRightSpeed();
   
-  // switch (currentDisplayMode) {
-  //   case DISPLAY_STATUS:
-  //     oledDisplayStatus(yaw, err, leftSpeed, rightSpeed);
-  //     break;
-  //   case DISPLAY_IR_DIGITAL:
-  //     oledDisplayIRReadings(irReadings);
-  //     break;
-  //   case DISPLAY_IR_RAW:
-  //     oledDisplayRawIRReadings(rawIrReadings);
-  //     break;
-  // }
-
-  // Detect turn (with debouncing)
-  int turn = detect_turn();
-
-  // State machine for movement
-  if (turn == -1) {
-    // Serial.println(">>> RIGHT TURN DETECTED");
-    turnRight(100);
-  } 
-  else if (turn == 1) {
-    // Serial.println(">>> LEFT TURN DETECTED");
-    turnLeft(100);
-  } 
-  else if (turn == 0) {
-    currentState = BOT_LINE_FOLLOWING;
-    followLine();
-  } 
-  else if (turn == -2) {
-    // turnRight(100);
-    stopMotors();
+  // ========================================================================
+  // MAZE SOLVING STATE MACHINE
+  // ========================================================================
+  
+  if (mazeState.currentMode == MAZE_DRY_RUN) {
+    // ====================================================================
+    // DRY RUN PHASE: EXPLORE AND LEARN
+    // ====================================================================
+    
+    // Update display with exploration progress
+    static unsigned long lastDisplayUpdate = 0;
+    if (millis() - lastDisplayUpdate > 500) {
+      oledDisplayDryRunStatus(
+        mazeState.junctions.size(),
+        mazeState.dryRunPath.size(),
+        getDistanceMM()
+      );
+      lastDisplayUpdate = millis();
+    }
+    
+    // Detect junction
+    int turnDetected = detect_turn();
+    
+    if (turnDetected != 0) {
+      // Junction detected - decide which way to go
+      Serial.print("[MAIN] Turn detected: ");
+      Serial.println(turnDetected);
+      
+      // Calculate new grid position based on current direction
+      int newX = mazeState.junctions[mazeState.currentJunction].x;
+      int newY = mazeState.junctions[mazeState.currentJunction].y;
+      
+      switch (mazeState.currentDirection) {
+        case DIR_NORTH:
+          newY--;
+          break;
+        case DIR_EAST:
+          newX++;
+          break;
+        case DIR_SOUTH:
+          newY++;
+          break;
+        case DIR_WEST:
+          newX--;
+          break;
+      }
+      
+      // Add or move to junction
+      addJunction(newX, newY, mazeState.currentDirection);
+      
+      // Handle next action at junction
+      handleJunction();
+    } else {
+      // No junction - continue straight line following
+      float error = calculate_error();
+      float correction = calculatePDCorrection(error);
+      
+      int leftSpeed = sensorConfig.baseSpeed + correction;
+      int rightSpeed = sensorConfig.baseSpeed - correction;
+      
+      leftSpeed = constrain(leftSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
+      rightSpeed = constrain(rightSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
+      
+      setMotorSpeeds(leftSpeed, rightSpeed);
+    }
+    
+  } else if (mazeState.currentMode == MAZE_FINAL_RUN) {
+    // ====================================================================
+    // FINAL RUN PHASE: FOLLOW SHORTEST PATH
+    // ====================================================================
+    
+    // Update display with progress
+    static unsigned long lastDisplayUpdate2 = 0;
+    if (millis() - lastDisplayUpdate2 > 500) {
+      oledDisplayFinalRunStatus(
+        mazeState.finalRunStep,
+        mazeState.shortestPath.length,
+        getDistanceMM()
+      );
+      lastDisplayUpdate2 = millis();
+    }
+    
+    // Detect if we've reached the next junction
+    int turnDetected = detect_turn();
+    
+    if (turnDetected != 0) {
+      // At junction - move to next step in path
+      executeNextStep();
+    } else {
+      // No junction - continue following line with PD controller
+      float error = calculate_error();
+      float correction = calculatePDCorrection(error);
+      
+      int leftSpeed = sensorConfig.baseSpeed + correction;
+      int rightSpeed = sensorConfig.baseSpeed - correction;
+      
+      leftSpeed = constrain(leftSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
+      rightSpeed = constrain(rightSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
+      
+      setMotorSpeeds(leftSpeed, rightSpeed);
+    }
+    
+  } else {
+    // IDLE MODE - Wait for button input
+    static unsigned long lastDisplayUpdate3 = 0;
+    if (millis() - lastDisplayUpdate3 > 1000) {
+      oledDisplayMazeIdle();
+      lastDisplayUpdate3 = millis();
+    }
+    
+    // Check if maze is complete (both runs done)
+    if (mazeState.endJunctionIndex >= 0 && 
+        mazeState.dryRunEndTime > 0 && 
+        mazeState.finalRunEndTime > 0) {
+      oledDisplayMazeComplete(mazeState.dryRunDistance, mazeState.finalRunDistance);
+    }
   }
-  else{
-    followLine();
-  }
-
-  // Small delay for stability
-  delay(5);
 }

@@ -17,5 +17,7 @@ void setMotorSpeeds(int leftSpeed, int rightSpeed);
 void setMotorCommand(int leftSpeed, int rightSpeed, bool applyOffset);
 int getLeftSpeed();
 int getRightSpeed();
+void turnAround(uint8_t speed);
+void setMotorCommands_inverse(int leftSpeed, int rightSpeed, bool applyOffset);
 
 #endif // MOVEMENT_H

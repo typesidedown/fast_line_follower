@@ -53,6 +53,30 @@ void setMotorCommand(int leftSpeed, int rightSpeed, bool applyOffset = true) {
   lastRightSpeed = rightSpeed;
 }
 
+void setMotorCommands_inverse(int leftSpeed, int rightSpeed, bool applyOffset = true) {
+  leftSpeed = constrain(leftSpeed, 0, 255);
+  rightSpeed = constrain(rightSpeed, 0, 255);
+
+  // Apply motor balance offset consistently
+  if (applyOffset) {
+    leftSpeed = constrain(leftSpeed - motorConfig.offsetMotorRight, 0, 255);
+    rightSpeed = constrain(rightSpeed + motorConfig.offsetMotorRight, 0, 255);
+  }
+
+  // Backward direction for both motors
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);   // Left motor forward
+  analogWrite(PWMA, leftSpeed);
+
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);  // Right motor backward
+  analogWrite(PWMB, rightSpeed);
+  digitalWrite(STBY, HIGH);
+
+  lastLeftSpeed = leftSpeed;
+  lastRightSpeed = rightSpeed;
+}
+
 void stopMotors() {
   analogWrite(PWMA, 0);
   analogWrite(PWMB, 0);
@@ -212,7 +236,7 @@ void turnAround(uint8_t speed) {
   yawDeg = 0;
 
   unsigned long start = millis();
-  float targetAngle = -motorConfig.turnAngleDegrees - 90;
+  float targetAngle = -motorConfig.turnAngleDegrees - 70;
   bool turnComplete = false;
   float peakYaw = 0;
 
@@ -227,13 +251,10 @@ void turnAround(uint8_t speed) {
     float angleDiff = fabs(yawDeg) - targetAngle;
     float speedFactor = constrain(1.0f - (angleDiff / 15.0f), 0.3f, 1.0f);
 
-    int adjustedSpeed = (int)(speed * speedFactor);
-    adjustedSpeed = constrain(adjustedSpeed, motorConfig.minPWM, speed);
+    int leftPwm = constrain(speed, 0, 255);
+    int rightPwm = constrain(speed, 0, 255);
 
-    int leftPwm = constrain(adjustedSpeed + motorConfig.turnDelta, 0, 255);
-    int rightPwm = constrain(adjustedSpeed - motorConfig.turnDelta, 0, 255);
-
-    setMotorCommand(leftPwm, rightPwm, false);  // Don't apply offset for turns
+    setMotorCommands_inverse(leftPwm, rightPwm, false);  // Don't apply offset for turns
 
     peakYaw = fmax(peakYaw, fabs(yawDeg));
 
