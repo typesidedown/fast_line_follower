@@ -22,6 +22,7 @@ int detect_turn(uint16_t irR[8] = irReadings);
 void followLine();
 void keep_track_of_endpoint(std::vector<int> ir_array);
 float calculatePDCorrection(float error);
+int handleJunctionDetection();
 
 // Runtime tuning functions
 void setIRThreshold(uint8_t channel, uint16_t threshold);

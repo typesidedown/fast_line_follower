@@ -24,6 +24,16 @@ int arr_cols = 8;
 std::vector<std::vector<int>> irValues(arr_rows, std::vector<int>(arr_cols));
 bool Endpoint = false;
 
+// Junction detection state
+struct JunctionState {
+  bool isDetectingJunction;
+  unsigned long junctionStartTime;
+  int junctionReturnValue;
+};
+
+JunctionState junctionState = {false, 0, 0};
+const unsigned long JUNCTION_FORWARD_TIME_MS = 100;  // Move forward for 100ms when detecting junction
+
 void initSensors() {
   pinMode(MUX_ADDR0, OUTPUT);
   pinMode(MUX_ADDR1, OUTPUT);
@@ -91,25 +101,25 @@ int detect_turn(uint16_t irR[8]) {
   centerCount = irR[CENTER_LEFT_SENSOR] + irR[CENTER_RIGHT_SENSOR];
 
   int currentDetection = 0;
+  bool isPossibleJunction = false;
 
-  // Priority: left turn > right turn > straight > ambiguous
+  // Priority: left turn > right turn > straight > ambiguous/junction
   if (leftCount >= LEFT_TURN_THRESHOLD && rightCount < RIGHT_TURN_THRESHOLD) {
     currentDetection = -1;  // LEFT TURN
   }
   else if (rightCount >= RIGHT_TURN_THRESHOLD && leftCount < LEFT_TURN_THRESHOLD) {
     currentDetection = 1;   // RIGHT TURN
   }
-  else if (centerCount+leftCount+rightCount >= CENTER_STRAIGHT_THRESHOLD) {
-    currentDetection = 0;   // LINE FOLLOW
+  else if (centerCount + leftCount + rightCount >= CENTER_STRAIGHT_THRESHOLD) {
+    currentDetection = 0;   // LINE FOLLOW / STRAIGHT PATH
   }
   else if(centerCount + rightCount + leftCount == 0){
-    currentDetection = -2;
-  }
-  else if(centerCount + rightCount + leftCount == 8){
-    currentDetection = 1;
+    currentDetection = -2;  // NO PATH
   }
   else {
-    currentDetection = 2;   // AMBIGUOUS/ERROR STATE
+    // Ambiguous state - could be a junction
+    isPossibleJunction = true;
+    currentDetection = 3;   // JUNCTION DETECTED - ambiguous state, need to check for straight
   }
 
   // Debouncing: only report if same detection for N consecutive frames
@@ -124,8 +134,90 @@ int detect_turn(uint16_t irR[8]) {
     return 0;  // Unconfirmed, treat as straight
   }
 
+  // If junction detected, trigger junction handling logic
+  if (currentDetection == 3 && isPossibleJunction) {
+    junctionState.isDetectingJunction = true;
+    junctionState.junctionStartTime = millis();
+  }
+
   return currentDetection;
 }
+
+// ============================================================================
+// Junction Detection with Forward Movement
+// ============================================================================
+int handleJunctionDetection() {
+  // If not in junction detection mode, return normal turn detection
+  if (!junctionState.isDetectingJunction) {
+    return detect_turn(irReadings);
+  }
+
+  unsigned long elapsedTime = millis() - junctionState.junctionStartTime;
+
+  // Phase 1: Move forward for JUNCTION_FORWARD_TIME_MS to probe for straight path
+  if (elapsedTime < JUNCTION_FORWARD_TIME_MS) {
+    moveForward(sensorConfig.baseSpeed);
+    return 0;  // Return 0 (straight) while probing
+  }
+
+  // Phase 2: Stop and re-read sensors to determine actual path
+  if (elapsedTime == JUNCTION_FORWARD_TIME_MS || 
+      (elapsedTime > JUNCTION_FORWARD_TIME_MS && elapsedTime < JUNCTION_FORWARD_TIME_MS + 20)) {
+    stopMotors();
+    delay(10);  // Brief pause to let robot settle
+    readIRArray();
+    return 0;  // Continue returning straight while evaluating
+  }
+
+  // Phase 3: Analyze the new sensor reading
+  if (elapsedTime >= JUNCTION_FORWARD_TIME_MS + 20) {
+    int leftCount = 0;
+    int rightCount = 0;
+    int centerCount = 0;
+
+    // Count active sensors by region with new readings
+    for (int i = LEFT_SENSORS_START; i <= LEFT_SENSORS_END; i++) {
+      if (irReadings[i] == 1) leftCount++;
+    }
+    for (int i = RIGHT_SENSORS_START; i <= RIGHT_SENSORS_END; i++) {
+      if (irReadings[i] == 1) rightCount++;
+    }
+
+    centerCount = irReadings[CENTER_LEFT_SENSOR] + irReadings[CENTER_RIGHT_SENSOR];
+
+    int result = 0;
+
+    // Determine the actual path after moving forward
+    // Check for straight path first (most important at junction)
+    if (centerCount >= 2 || (centerCount + leftCount + rightCount >= CENTER_STRAIGHT_THRESHOLD)) {
+      result = 0;   // STRAIGHT PATH - prioritize straight detection
+    }
+    else if (leftCount >= LEFT_TURN_THRESHOLD && rightCount < RIGHT_TURN_THRESHOLD) {
+      result = -1;  // LEFT TURN
+    }
+    else if (rightCount >= RIGHT_TURN_THRESHOLD && leftCount < LEFT_TURN_THRESHOLD) {
+      result = 1;   // RIGHT TURN
+    }
+    else if (centerCount + rightCount + leftCount == 0) {
+      result = -2;  // NO PATH
+    }
+    else {
+      result = 2;   // Still ambiguous - treat as straight attempt
+    }
+
+    // Exit junction detection mode and return the determined direction
+    junctionState.isDetectingJunction = false;
+    junctionState.junctionReturnValue = result;
+
+    Serial.print("Junction resolved to: ");
+    Serial.println(result);
+
+    return result;
+  }
+
+  return 0;
+}
+
 
 float calculate_error() {
   float err = 0.0f;

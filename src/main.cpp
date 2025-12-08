@@ -4,8 +4,6 @@
 #include "imu.h"
 #include "oled.h"
 #include "config.h"
-#include "maze.h"
-#include "buttons.h"
 
 // ============================================================================
 // DISPLAY MODE SELECTION
@@ -216,175 +214,272 @@ void setup() {
 
   // Serial.println("\n===== LINE FOLLOWER BOT STARTUP =====");
   // Serial.println("Initializing systems...");
-  
+
   // initialize modules
   initMovement();
   initSensors();
   initIMU();
   initOLED();
   initializeConfig();
-  initButtons();
-  initMaze();
   
   // Initialize distance estimation with 50mm per unit (adjust as needed)
   initDistanceEstimator(50);
 
   // Serial.println("All systems initialized!");
   printConfig();
-  oledDisplayMazeIdle();
   // Serial.println("Type 'help' for available commands");
   // Serial.println("=====================================\n");
 }
 
+// ============================================================================
+// JUNCTION STATE MACHINE
+// ============================================================================
+enum JunctionPhase {
+  PHASE_NORMAL_FOLLOW = 0,          // Normal line following
+  PHASE_JUNCTION_DETECTED = 1,      // Junction detected, about to probe
+  PHASE_PROBING_FORWARD = 2,        // Moving forward to probe for straight
+  PHASE_ANALYSIS = 3,               // Analyzing sensor readings
+  PHASE_DECISION_MADE = 4,          // Decision made, ready to execute
+  PHASE_EXECUTING_DECISION = 5      // Executing the decided turn/action
+};
+
+struct JunctionState_Main {
+  JunctionPhase phase;
+  unsigned long phaseStartTime;
+  int detectedLeftRight;            // Detected left/right path before probing
+  int detectedStraight;             // Detected straight path after probing
+  int finalDecision;                // Final decision made
+  bool decisionExecuted;            // Whether we've started executing
+};
+
+JunctionState_Main juncState = {PHASE_NORMAL_FOLLOW, 0, 0, 0, 0, false};
+
+// ============================================================================
+// DETECT LEFT AND RIGHT PATHS AT JUNCTION
+// ============================================================================
+int detectLeftRightPaths() {
+  int leftCount = 0;
+  int rightCount = 0;
+
+  // Count active sensors by region
+  for (int i = LEFT_SENSORS_START; i <= LEFT_SENSORS_END; i++) {
+    if (irReadings[i] == 1) leftCount++;
+  }
+  for (int i = RIGHT_SENSORS_START; i <= RIGHT_SENSORS_END; i++) {
+    if (irReadings[i] == 1) rightCount++;
+  }
+
+  // Return: -1 (left), 1 (right), 2 (both), 0 (neither)
+  if (leftCount >= LEFT_TURN_THRESHOLD && rightCount >= RIGHT_TURN_THRESHOLD) {
+    return 2;  // Both paths available
+  } else if (leftCount >= LEFT_TURN_THRESHOLD) {
+    return -1; // Left path available
+  } else if (rightCount >= RIGHT_TURN_THRESHOLD) {
+    return 1;  // Right path available
+  } else {
+    return 0;  // Neither left nor right
+  }
+}
+
+// ============================================================================
+// DETECT STRAIGHT PATH (after probing forward)
+// ============================================================================
+int detectStraightPath() {
+  int centerCount = irReadings[CENTER_LEFT_SENSOR] + irReadings[CENTER_RIGHT_SENSOR];
+  int totalActive = 0;
+  
+  for (int i = 0; i < 8; i++) {
+    if (irReadings[i] == 1) totalActive++;
+  }
+
+  // Straight path if center sensors are active
+  if (centerCount >= 2 || totalActive >= CENTER_STRAIGHT_THRESHOLD) {
+    return 1;  // Straight path detected
+  }
+  return 0;   // No straight path
+}
+
+// ============================================================================
+// MAKE JUNCTION DECISION - Priority: LEFT > FORWARD > RIGHT > TURNAROUND
+// ============================================================================
+int makeJunctionDecision(int leftRightPaths, int straightPath) {
+  // Priority order:
+  // 1. LEFT if available
+  // 2. FORWARD/STRAIGHT if available
+  // 3. RIGHT if available
+  // 4. TURNAROUND if none available
+
+  if (leftRightPaths == -1 || leftRightPaths == 2) {
+    // Left path available (either alone or with right)
+    Serial.println("[DECISION] LEFT path available -> Turn LEFT");
+    return -1;
+  } 
+  else if (straightPath == 1) {
+    // No left, but straight available
+    Serial.println("[DECISION] No LEFT, STRAIGHT path available -> Go FORWARD");
+    return 0;
+  } 
+  else if (leftRightPaths == 1) {
+    // No left or straight, but right available
+    Serial.println("[DECISION] No LEFT/FORWARD, RIGHT path available -> Turn RIGHT");
+    return 1;
+  } 
+  else {
+    // No paths available
+    Serial.println("[DECISION] No paths available -> TURNAROUND");
+    return -2;
+  }
+}
+
+// ============================================================================
+// EXECUTE JUNCTION DECISION
+// ============================================================================
+void executeJunctionDecision(int decision) {
+  switch (decision) {
+    case -1:  // LEFT TURN
+      Serial.println("-> Executing LEFT TURN");
+      turnLeft(sensorConfig.baseSpeed);
+      juncState.decisionExecuted = true;
+      break;
+
+    case 0:   // STRAIGHT PATH / FORWARD
+      Serial.println("-> Following STRAIGHT PATH");
+      followLine();
+      juncState.decisionExecuted = true;
+      break;
+
+    case 1:   // RIGHT TURN
+      Serial.println("-> Executing RIGHT TURN");
+      turnRight(sensorConfig.baseSpeed);
+      juncState.decisionExecuted = true;
+      break;
+
+    case -2:  // DEAD END - TURNAROUND
+      Serial.println("-> DEAD END, executing TURNAROUND");
+      turnAround(sensorConfig.baseSpeed);
+      juncState.decisionExecuted = true;
+      break;
+
+    default:
+      Serial.println("-> Unknown decision, following line");
+      followLine();
+      break;
+  }
+}
+
 void loop() {
-  // ========================================================================
-  // BUTTON HANDLING - CHECK FOR MODE CHANGES
-  // ========================================================================
-  updateButtonStates();
-  // Serial.println(analogRead(BUTTON_MODE_1_PIN)); // debugging button pin reads -- to be removed later
-  if (wasButton1Pressed()) {
-    // Button 1: Start DRY RUN
-    if (mazeState.currentMode != MAZE_DRY_RUN) {
-      switchMazeMode(MAZE_DRY_RUN);
-    }
-  }
-  
-  if (wasButton2Pressed()) {
-    // Button 2: Start FINAL RUN (only if dry run complete)
-    if (mazeState.endJunctionIndex >= 0 && mazeState.currentMode != MAZE_FINAL_RUN) {
-      switchMazeMode(MAZE_FINAL_RUN);
-    }
-  }
-  
-  // ========================================================================
-  // SERIAL COMMAND HANDLING (TUNING AND DEBUG)
-  // ========================================================================
+  // Process serial commands for tuning
   handleSerialCommands();
-  
-  // ========================================================================
-  // SENSOR READING
-  // ========================================================================
+
+  // Read sensor inputs
   readIRArray();
   diagnostics.loopCount++;
-  
-  // Update distance estimation (must be before any turn/movement)
+
+  // Update distance estimation
   updateDistance();
-  
+
   // ========================================================================
-  // MAZE SOLVING STATE MACHINE
+  // JUNCTION STATE MACHINE
   // ========================================================================
   
-  if (mazeState.currentMode == MAZE_DRY_RUN) {
-    // ====================================================================
-    // DRY RUN PHASE: EXPLORE AND LEARN
-    // ====================================================================
+  switch (juncState.phase) {
     
-    // Update display with exploration progress
-    static unsigned long lastDisplayUpdate = 0;
-    if (millis() - lastDisplayUpdate > 500) {
-      oledDisplayDryRunStatus(
-        mazeState.junctions.size(),
-        mazeState.dryRunPath.size(),
-        getDistanceMM()
-      );
-      lastDisplayUpdate = millis();
+    case PHASE_NORMAL_FOLLOW: {
+      // Normal line following - detect if we hit a junction
+      int detectedPath = detect_turn(irReadings);
+      
+      if (detectedPath == 3) {
+        // Junction detected!
+        Serial.println("\n[JUNCTION] Detected! Stopping to analyze...");
+        stopMotors();
+        delay(50);  // Brief pause to settle
+        
+        // Read and detect left/right paths
+        readIRArray();
+        juncState.detectedLeftRight = detectLeftRightPaths();
+        Serial.print("[JUNCTION] Left/Right paths: ");
+        Serial.println(juncState.detectedLeftRight);
+        
+        // Transition to probing phase
+        juncState.phase = PHASE_PROBING_FORWARD;
+        juncState.phaseStartTime = millis();
+        Serial.println("[PROBING] Moving forward to check for straight path...");
+      } 
+      else if (detectedPath == 0) {
+        // Straight path - continue following
+        followLine();
+      }
+      else if (detectedPath == -1) {
+        // Slight left bias
+        followLine();
+      }
+      else if (detectedPath == 1) {
+        // Slight right bias
+        followLine();
+      }
+      else if (detectedPath == -2) {
+        // No path - treat as dead end
+        Serial.println("[DEAD END] No line detected!");
+        juncState.finalDecision = -2;
+        juncState.phase = PHASE_DECISION_MADE;
+      }
+      break;
     }
-    
-    // Detect junction
-    int turnDetected = detect_turn();
-    
-    if (turnDetected != 0) {
-      // Junction detected - decide which way to go
-      Serial.print("[MAIN] Turn detected: ");
-      Serial.println(turnDetected);
+
+    case PHASE_PROBING_FORWARD: {
+      // Move forward for 100ms to probe for straight path
+      unsigned long elapsedTime = millis() - juncState.phaseStartTime;
       
-      // Calculate new grid position based on current direction
-      int newX = mazeState.junctions[mazeState.currentJunction].x;
-      int newY = mazeState.junctions[mazeState.currentJunction].y;
-      
-      switch (mazeState.currentDirection) {
-        case DIR_NORTH:
-          newY--;
-          break;
-        case DIR_EAST:
-          newX++;
-          break;
-        case DIR_SOUTH:
-          newY++;
-          break;
-        case DIR_WEST:
-          newX--;
-          break;
+      if (elapsedTime < 100) {
+        // Still probing - move forward
+        moveForward(sensorConfig.baseSpeed);
+      } 
+      else if (elapsedTime < 120) {
+        // Stop and re-read sensors
+        stopMotors();
+        delay(10);
+        readIRArray();
+        juncState.detectedStraight = detectStraightPath();
+        Serial.print("[PROBING] Straight path detected: ");
+        Serial.println(juncState.detectedStraight);
+      } 
+      else {
+        // Probing complete, move to analysis
+        stopMotors();
+        juncState.phase = PHASE_ANALYSIS;
+      }
+      break;
+    }
+
+    case PHASE_ANALYSIS: {
+      // Analyze the sensor readings and make decision
+      juncState.finalDecision = makeJunctionDecision(
+        juncState.detectedLeftRight,
+        juncState.detectedStraight
+      );
+      juncState.phase = PHASE_DECISION_MADE;
+      break;
+    }
+
+    case PHASE_DECISION_MADE: {
+      // Execute the decided action once
+      if (!juncState.decisionExecuted) {
+        executeJunctionDecision(juncState.finalDecision);
       }
       
-      // Add or move to junction
-      addJunction(newX, newY, mazeState.currentDirection);
-      
-      // Handle next action at junction
-      handleJunction();
-    } else {
-      // No junction - continue straight line following
-      float error = calculate_error();
-      float correction = calculatePDCorrection(error);
-      
-      int leftSpeed = sensorConfig.baseSpeed + correction;
-      int rightSpeed = sensorConfig.baseSpeed - correction;
-      
-      leftSpeed = constrain(leftSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
-      rightSpeed = constrain(rightSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
-      
-      setMotorSpeeds(leftSpeed, rightSpeed);
+      // Wait for turn to complete, then return to normal following
+      // (Turn functions are blocking, so we wait here)
+      juncState.decisionExecuted = false;
+      juncState.phase = PHASE_NORMAL_FOLLOW;
+      Serial.println("[JUNCTION] Decision executed. Returning to normal line following.\n");
+      break;
     }
-    
-  } else if (mazeState.currentMode == MAZE_FINAL_RUN) {
-    // ====================================================================
-    // FINAL RUN PHASE: FOLLOW SHORTEST PATH
-    // ====================================================================
-    
-    // Update display with progress
-    static unsigned long lastDisplayUpdate2 = 0;
-    if (millis() - lastDisplayUpdate2 > 500) {
-      oledDisplayFinalRunStatus(
-        mazeState.finalRunStep,
-        mazeState.shortestPath.length,
-        getDistanceMM()
-      );
-      lastDisplayUpdate2 = millis();
-    }
-    
-    // Detect if we've reached the next junction
-    int turnDetected = detect_turn();
-    
-    if (turnDetected != 0) {
-      // At junction - move to next step in path
-      executeNextStep();
-    } else {
-      // No junction - continue following line with PD controller
-      float error = calculate_error();
-      float correction = calculatePDCorrection(error);
-      
-      int leftSpeed = sensorConfig.baseSpeed + correction;
-      int rightSpeed = sensorConfig.baseSpeed - correction;
-      
-      leftSpeed = constrain(leftSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
-      rightSpeed = constrain(rightSpeed, sensorConfig.minSpeed, sensorConfig.maxSpeed);
-      
-      setMotorSpeeds(leftSpeed, rightSpeed);
-    }
-    
-  } else {
-    // IDLE MODE - Wait for button input
-    static unsigned long lastDisplayUpdate3 = 0;
-    if (millis() - lastDisplayUpdate3 > 1000) {
-      oledDisplayMazeIdle();
-      lastDisplayUpdate3 = millis();
-    }
-    
-    // Check if maze is complete (both runs done)
-    if (mazeState.endJunctionIndex >= 0 && 
-        mazeState.dryRunEndTime > 0 && 
-        mazeState.finalRunEndTime > 0) {
-      oledDisplayMazeComplete(mazeState.dryRunDistance, mazeState.finalRunDistance);
-    }
+
+    default:
+      // Fallback to normal follow
+      juncState.phase = PHASE_NORMAL_FOLLOW;
+      followLine();
+      break;
   }
+
 }
