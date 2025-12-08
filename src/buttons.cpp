@@ -4,8 +4,8 @@
 ButtonState buttonState;
 
 void initButtons() {
-  pinMode(BUTTON_MODE_1_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_MODE_2_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_MODE_1_PIN, INPUT);
+  pinMode(BUTTON_MODE_2_PIN, INPUT);
   
   buttonState.button1Pressed = false;
   buttonState.button2Pressed = false;
@@ -21,7 +21,7 @@ void updateButtonStates() {
   unsigned long now = millis();
   
   // Button 1 handling
-  bool button1Current = (digitalRead(BUTTON_MODE_1_PIN) == LOW);  // Active low (pullup)
+  bool button1Current = (analogRead(BUTTON_MODE_1_PIN) >800);  // Active low (pullup)
   
   if (button1Current && !buttonState.button1Pressed) {
     // Button pressed (transition from high to low)
@@ -37,7 +37,7 @@ void updateButtonStates() {
   }
   
   // Button 2 handling
-  bool button2Current = (digitalRead(BUTTON_MODE_2_PIN) == LOW);  // Active low (pullup)
+  bool button2Current = (analogRead(BUTTON_MODE_2_PIN) >800);  // Active low (pullup)
   
   if (button2Current && !buttonState.button2Pressed) {
     // Button pressed (transition from high to low)

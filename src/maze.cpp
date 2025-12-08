@@ -5,6 +5,7 @@
 #include "oled.h"
 #include "config.h"
 #include "pathfinder.h"
+#include "junction_detector.h"
 #include <Arduino.h>
 
 // ============================================================================

@@ -216,7 +216,7 @@ void setup() {
 
   // Serial.println("\n===== LINE FOLLOWER BOT STARTUP =====");
   // Serial.println("Initializing systems...");
-
+  
   // initialize modules
   initMovement();
   initSensors();
@@ -241,7 +241,7 @@ void loop() {
   // BUTTON HANDLING - CHECK FOR MODE CHANGES
   // ========================================================================
   updateButtonStates();
-  
+  // Serial.println(analogRead(BUTTON_MODE_1_PIN)); // debugging button pin reads -- to be removed later
   if (wasButton1Pressed()) {
     // Button 1: Start DRY RUN
     if (mazeState.currentMode != MAZE_DRY_RUN) {
